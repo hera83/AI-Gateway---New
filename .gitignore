@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+
+# SQLite databases (App_dbs/ is recreated automatically at startup)
+App_dbs/
+
+# Original knowledge-base document uploads (App_files/ is recreated automatically at startup)
+App_files/
+
+# Environment-specific settings — holds the real Auth:MasterApiKey for local dev
+appsettings.Development.json
+
+# Docker env file — holds real secrets (AUTH_MASTER_API_KEY, etc.); .env.example stays tracked
+.env
+.env.*
+!.env.example
+
+# IDE
+.vs/
+*.user

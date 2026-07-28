@@ -1,0 +1,26 @@
+services:
+  aigateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aigateway:latest
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      # Maps to Auth:MasterApiKey / Ollama:BaseUrl / Speaches:BaseUrl via ASP.NET Core's
+      # double-underscore configuration binding convention.
+      Auth__MasterApiKey: ${AUTH_MASTER_API_KEY}
+      Ollama__BaseUrl: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      Speaches__BaseUrl: ${SPEACHES_BASE_URL:-http://host.docker.internal:8000}
+    volumes:
+      # Bind-mounted (not named volumes) so the databases/files land in the same
+      # App_dbs/ and App_files/ folders used by local `dotnet run`, per CLAUDE.md.
+      - ./App_dbs:/app/App_dbs
+      - ./App_files:/app/App_files
+    extra_hosts:
+      # Lets Ollama__BaseUrl / Speaches__BaseUrl point at services running on the Docker
+      # host itself via host.docker.internal. Docker Desktop (Windows/Mac) provides this
+      # automatically; this entry makes it also resolve on Linux hosts.
+      - "host.docker.internal:host-gateway"

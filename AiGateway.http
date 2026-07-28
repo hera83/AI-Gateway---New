@@ -1,0 +1,163 @@
+@AiGateway_HostAddress = http://localhost:5207
+// Paste your local Auth:MasterApiKey (from appsettings.Development.json) here — don't commit a real value.
+@MasterApiKey = REPLACE_WITH_YOUR_DEV_MASTER_API_KEY
+
+### Health (no auth required)
+GET {{AiGateway_HostAddress}}/health
+Accept: application/json
+
+### List keys (Administrator only — master key)
+GET {{AiGateway_HostAddress}}/keys
+X-Api-Key: {{MasterApiKey}}
+Accept: application/json
+
+### Create a key — the returned "apiKey" value is shown once and never again
+POST {{AiGateway_HostAddress}}/keys
+X-Api-Key: {{MasterApiKey}}
+Content-Type: application/json
+
+{
+  "name": "Example integration",
+  "responsibleName": "Jane Doe",
+  "contactInfo": "jane.doe@example.com"
+}
+
+### Get a single key by id
+@KeyId = 00000000-0000-0000-0000-000000000000
+GET {{AiGateway_HostAddress}}/keys/{{KeyId}}
+X-Api-Key: {{MasterApiKey}}
+Accept: application/json
+
+### Edit a key's metadata
+PUT {{AiGateway_HostAddress}}/keys/{{KeyId}}
+X-Api-Key: {{MasterApiKey}}
+Content-Type: application/json
+
+{
+  "name": "Example integration",
+  "responsibleName": "Jane Doe",
+  "contactInfo": "jane.doe@example.com",
+  "expiresAt": "2027-01-01T00:00:00Z"
+}
+
+### Rollover (rotate) a key — the returned "apiKey" value is shown once and never again
+POST {{AiGateway_HostAddress}}/keys/{{KeyId}}/rollover
+X-Api-Key: {{MasterApiKey}}
+
+### Deactivate a key
+POST {{AiGateway_HostAddress}}/keys/{{KeyId}}/deactivate
+X-Api-Key: {{MasterApiKey}}
+
+### Activate a key
+POST {{AiGateway_HostAddress}}/keys/{{KeyId}}/activate
+X-Api-Key: {{MasterApiKey}}
+
+### Audit log for a key
+GET {{AiGateway_HostAddress}}/keys/{{KeyId}}/audit-log
+X-Api-Key: {{MasterApiKey}}
+Accept: application/json
+
+### Ollama / Speaches endpoints require any active key (Standard or Administrator)
+GET {{AiGateway_HostAddress}}/ollama/version
+X-Api-Key: {{MasterApiKey}}
+Accept: application/json
+
+### Search logs (Administrator only — master key). All query params are optional.
+GET {{AiGateway_HostAddress}}/Logs/Search?Level=Error&Search=timeout&From=2026-07-01T00:00:00Z&Page=1&PageSize=50
+X-Api-Key: {{MasterApiKey}}
+Accept: application/json
+
+### Knowledge Base — requires a Standard-role key (create one via POST /keys above).
+### The master key is deliberately blocked from all Knowledge Base actions (403) since it has no ApiKey row to own data under.
+@StandardApiKey = REPLACE_WITH_A_STANDARD_ROLE_API_KEY
+
+### Create a knowledge group
+POST {{AiGateway_HostAddress}}/KnowledgeBase/CreateGroup
+X-Api-Key: {{StandardApiKey}}
+Content-Type: application/json
+
+{
+  "name": "Kunde data"
+}
+
+### List my knowledge groups
+GET {{AiGateway_HostAddress}}/KnowledgeBase/ListGroups
+X-Api-Key: {{StandardApiKey}}
+Accept: application/json
+
+### Delete a knowledge group (cascades to its documents/chunks)
+@GroupId = 00000000-0000-0000-0000-000000000000
+DELETE {{AiGateway_HostAddress}}/KnowledgeBase/DeleteGroup/{{GroupId}}
+X-Api-Key: {{StandardApiKey}}
+
+### Upload a document (txt/md/pdf/docx) to a group — extracted, chunked, embedded, and indexed synchronously
+POST {{AiGateway_HostAddress}}/KnowledgeBase/UploadDocument
+X-Api-Key: {{StandardApiKey}}
+Content-Type: multipart/form-data; boundary=AiGatewayBoundary
+
+--AiGatewayBoundary
+Content-Disposition: form-data; name="GroupId"
+
+{{GroupId}}
+--AiGatewayBoundary
+Content-Disposition: form-data; name="File"; filename="example.txt"
+Content-Type: text/plain
+
+This is example knowledge base content used to test upload and RAG search.
+--AiGatewayBoundary--
+
+### List documents (optionally filtered by groupId)
+GET {{AiGateway_HostAddress}}/KnowledgeBase/ListDocuments?groupId={{GroupId}}
+X-Api-Key: {{StandardApiKey}}
+Accept: application/json
+
+### Delete a document (and its chunks/vectors)
+@DocumentId = 00000000-0000-0000-0000-000000000000
+DELETE {{AiGateway_HostAddress}}/KnowledgeBase/DeleteDocument/{{DocumentId}}
+X-Api-Key: {{StandardApiKey}}
+
+### Download a document's original uploaded file
+GET {{AiGateway_HostAddress}}/KnowledgeBase/DownloadDocument/{{DocumentId}}
+X-Api-Key: {{StandardApiKey}}
+
+### Search for the most relevant chunks across every group/document the calling key owns — TopK is optional
+POST {{AiGateway_HostAddress}}/KnowledgeBase/Search
+X-Api-Key: {{StandardApiKey}}
+Content-Type: application/json
+
+{
+  "query": "What is in the example content?",
+  "topK": 5
+}
+
+### Retrieval-augmented chat — same "messages" contract as Ollama/Chat (below), but retrieves context
+### across every group/document the calling key owns and returns it as "sources" alongside the answer.
+### Retrieval uses only the latest "user" message, never the full messages list.
+POST {{AiGateway_HostAddress}}/KnowledgeBase/RagChat
+X-Api-Key: {{StandardApiKey}}
+Content-Type: application/json
+
+{
+  "model": "llama3.2",
+  "messages": [
+    { "role": "user", "content": "What is in the example content?" }
+  ],
+  "topK": 5
+}
+
+### Retrieval-augmented chat, turn 2 — the caller resends the full conversation each turn (the server
+### holds no conversation state), appending the previous call's "message" as an assistant turn.
+### Retrieval for this call is still based only on the newest "user" message, not earlier turns.
+POST {{AiGateway_HostAddress}}/KnowledgeBase/RagChat
+X-Api-Key: {{StandardApiKey}}
+Content-Type: application/json
+
+{
+  "model": "llama3.2",
+  "messages": [
+    { "role": "user", "content": "What is in the example content?" },
+    { "role": "assistant", "content": "<paste the previous call's \"message.content\" here>" },
+    { "role": "user", "content": "And how does that compare to last month?" }
+  ],
+  "topK": 5
+}
