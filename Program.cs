@@ -158,14 +158,18 @@ try
         client.BaseAddress = new Uri(baseUrl);
         // Default HttpClient.Timeout (100s) is too short for chat/embed generation on slower
         // models or cold model loads, causing RagChat and Ollama/Chat to fail with a spurious
-        // 504 (TaskCanceledException, see GlobalExceptionHandler).
-        client.Timeout = TimeSpan.FromMinutes(5);
+        // 504 (TaskCanceledException, see GlobalExceptionHandler). 15 min gives headroom above the
+        // slowest observed Ollama calls (~10 min).
+        client.Timeout = TimeSpan.FromMinutes(15);
     });
     builder.Services.AddHttpClient<ISpeachesService, SpeachesService>(client =>
     {
         var baseUrl = builder.Configuration["Speaches:BaseUrl"]
             ?? throw new InvalidOperationException("Configuration value 'Speaches:BaseUrl' is missing.");
         client.BaseAddress = new Uri(baseUrl);
+        // Default HttpClient.Timeout (100s) is far too short — some Speaches calls (e.g. long
+        // transcriptions) can take up to an hour. 75 min gives headroom above that.
+        client.Timeout = TimeSpan.FromMinutes(75);
     });
 
     var app = builder.Build();
