@@ -248,6 +248,8 @@ try
 
     app.MapControllers();
 
+    app.MapGet("/", () => Results.Redirect("/swagger")).ExcludeFromDescription();
+
     app.Run();
 }
 catch (Exception exception)
