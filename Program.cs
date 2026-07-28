@@ -156,6 +156,10 @@ try
         var baseUrl = builder.Configuration["Ollama:BaseUrl"]
             ?? throw new InvalidOperationException("Configuration value 'Ollama:BaseUrl' is missing.");
         client.BaseAddress = new Uri(baseUrl);
+        // Default HttpClient.Timeout (100s) is too short for chat/embed generation on slower
+        // models or cold model loads, causing RagChat and Ollama/Chat to fail with a spurious
+        // 504 (TaskCanceledException, see GlobalExceptionHandler).
+        client.Timeout = TimeSpan.FromMinutes(5);
     });
     builder.Services.AddHttpClient<ISpeachesService, SpeachesService>(client =>
     {
