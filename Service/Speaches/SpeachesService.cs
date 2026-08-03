@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.WebSockets;
 using System.Text.Json;
 using AiGateway.Service.Speaches.Dtos;
 using AiGateway.Service.Speaches.Interfaces;
@@ -60,6 +61,61 @@ public class SpeachesService(HttpClient httpClient) : ISpeachesService
         }
 
         return await PostMultipartAsync<TranscriptionResultDto>("v1/audio/transcriptions", content, cancellationToken);
+    }
+
+    public async Task ProxyRealtimeTranscriptionAsync(WebSocket clientSocket, string model, string? language, CancellationToken cancellationToken)
+    {
+        // httpClient.BaseAddress is http(s):// (see Program.cs) — Speaches' realtime endpoint is
+        // the same host/port, just upgraded to a WebSocket, so ws(s):// is the only thing that changes.
+        var upstreamUriBuilder = new UriBuilder(httpClient.BaseAddress!)
+        {
+            Scheme = httpClient.BaseAddress!.Scheme == Uri.UriSchemeHttps ? "wss" : "ws",
+            Path = "/v1/realtime",
+            Query = language is null
+                ? $"intent=transcription&model={Uri.EscapeDataString(model)}"
+                : $"intent=transcription&model={Uri.EscapeDataString(model)}&language={Uri.EscapeDataString(language)}"
+        };
+
+        using var upstreamSocket = new ClientWebSocket();
+        await upstreamSocket.ConnectAsync(upstreamUriBuilder.Uri, cancellationToken);
+
+        await Task.WhenAll(
+            RelayAsync(clientSocket, upstreamSocket, cancellationToken),
+            RelayAsync(upstreamSocket, clientSocket, cancellationToken));
+    }
+
+    // Speaches' realtime protocol (mirroring OpenAI's Realtime API) is a sequence of JSON text-frame
+    // events — audio is base64 inside e.g. "input_audio_buffer.append", not a raw binary frame — so
+    // this gateway never needs to parse a single event: it only has to shuttle whole messages
+    // verbatim in both directions until one side closes.
+    private static async Task RelayAsync(WebSocket source, WebSocket destination, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[8192];
+        while (source.State == WebSocketState.Open)
+        {
+            using var messageStream = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
+            {
+                result = await source.ReceiveAsync(buffer, cancellationToken);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    if (destination.State == WebSocketState.Open)
+                    {
+                        await destination.CloseOutputAsync(result.CloseStatus ?? WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, cancellationToken);
+                    }
+
+                    return;
+                }
+
+                messageStream.Write(buffer, 0, result.Count);
+            } while (!result.EndOfMessage);
+
+            if (destination.State == WebSocketState.Open)
+            {
+                await destination.SendAsync(messageStream.ToArray(), result.MessageType, true, cancellationToken);
+            }
+        }
     }
 
     public async Task<TranslationResultDto> TranslateAsync(TranslationRequestDto request, CancellationToken cancellationToken)

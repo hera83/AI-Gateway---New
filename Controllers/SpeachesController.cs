@@ -33,6 +33,32 @@ public class SpeachesController(ISpeachesService speachesService) : ControllerBa
         return Ok(ToApi(result));
     }
 
+    // WebSocket upgrade, not a request/response call like the rest of this controller — the caller
+    // opens wss://.../Speaches/TranscribeRealtime?model=...&language=..., streams audio in, and
+    // receives Speaches' realtime transcription events back over the same connection (see
+    // Service/Speaches/Docs/SpeachesService.md for the event flow). A 400 is only possible before the
+    // upgrade happens; once it does, this action never returns a normal HTTP response.
+    [HttpGet]
+    [ProducesResponseType(StatusCodes.Status101SwitchingProtocols)]
+    [ProducesResponseType(typeof(ErrorResponseDto), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> TranscribeRealtime([FromQuery] ApiDto.RealtimeTranscribeRequestDto request, CancellationToken cancellationToken)
+    {
+        if (!HttpContext.WebSockets.IsWebSocketRequest)
+        {
+            return BadRequest(new ErrorResponseDto
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "WebSocket request required",
+                Detail = "This endpoint only accepts WebSocket upgrade requests.",
+                TraceId = HttpContext.TraceIdentifier
+            });
+        }
+
+        using var clientSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+        await speachesService.ProxyRealtimeTranscriptionAsync(clientSocket, request.Model, request.Language, cancellationToken);
+        return new EmptyResult();
+    }
+
     [HttpPost]
     [ProducesResponseType(typeof(ApiDto.TranslationResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ErrorResponseDto), StatusCodes.Status400BadRequest)]

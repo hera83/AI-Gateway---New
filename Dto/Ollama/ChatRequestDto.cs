@@ -15,4 +15,8 @@ public class ChatRequestDto
     public OllamaOptionsDto? Options { get; set; }
 
     public string? KeepAlive { get; set; }
+
+    // Defaults to false (unlike Ollama's own default of true) so existing callers that don't set
+    // this keep getting today's single-JSON-object response instead of suddenly switching shape.
+    public bool Stream { get; set; }
 }

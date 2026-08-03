@@ -21,6 +21,15 @@ To sæt DTO'er for samme data, jf. den generelle Service-konvention:
 ## Binært lyd-svar
 `POST /speaches/audio/speech` (tale-syntese) returnerer rå lydbytes (mp3/wav/flac/opus/aac/pcm afhængig af `responseFormat`), ikke JSON. Dette er den ene bevidste undtagelse fra DTO-konventionens "alt output skal have en `*ResponseDto`" — `SpeachesController.SynthesizeSpeech` returnerer et `FileResult` (`File(bytes, contentType)`) med content-type videresendt fra Speaches, som er standard ASP.NET Core-praksis for binære svar.
 
+## Realtime (streaming) transskribering
+`GET /Speaches/TranscribeRealtime?model=<model>&language=<sprog>` (WebSocket upgrade, ikke et almindeligt request/response-kald) er en gennemsigtig proxy til Speaches' `/v1/realtime`-endpoint med `intent=transcription` — kalderen streamer lyd ind og får Speaches' transskriptions-events (`input_audio_buffer.speech_started` → `speech_stopped` → `committed` → `conversation.item.created` → `conversation.item.input_audio_transcription.completed`) tilbage på samme forbindelse, uden at der genereres et AI-svar (`create_response=false` i transcription-mode).
+
+- Speaches' realtime-protokol (den følger OpenAIs Realtime API) er udelukkende JSON-tekst-frames — lyd sendes base64-encoded inde i events som `input_audio_buffer.append`, ikke som rå binære frames. Det betyder gatewayen aldrig behøver parse et enkelt event: `SpeachesService.ProxyRealtimeTranscriptionAsync` læser og videresender hele beskeder verbatim i begge retninger (klient ↔ Speaches), indtil den ene side lukker.
+- `SpeachesController.TranscribeRealtime` tjekker `HttpContext.WebSockets.IsWebSocketRequest`, returnerer `400` med den sædvanlige `ErrorResponseDto` hvis det ikke er et upgrade-request, og accepterer ellers websocket'en (`HttpContext.WebSockets.AcceptWebSocketAsync()`) før den overgiver den til servicen. Efter upgrade'et kan der ikke længere returneres et normalt HTTP-fejlsvar — det er en generel begrænsning ved WebSockets, ikke noget denne endpoint gør anderledes end andre WebSocket-implementeringer.
+- `[Authorize]` (arvet fra controller-klassen) gælder som normalt, fordi en WebSocket-håndtryk stadig er et almindeligt HTTP GET-request før upgrade — kaldere skal altså sende `X-Api-Key`-headeren under håndtrykket, ligesom ethvert andet endpoint. Browseres indbyggede `WebSocket`-API kan ikke sætte custom headers; ikke-browser-klienter (f.eks. `ClientWebSocket` eller Postman) kan.
+- `app.UseWebSockets()` er slået til i `Program.cs`, placeret før `UseAuthentication`/`UseAuthorization`, så upgrade-requestet stadig går gennem den normale auth-pipeline.
+- Speaches' `model`-parameter betyder transskriberingsmodellen i `intent=transcription`-mode (i modsætning til `intent=conversation`, hvor den betyder samtale-modellen) — gatewayen sender altid `intent=transcription`, så `RealtimeTranscribeRequestDto.Model` mapper direkte til dét.
+
 ## Forenklinger
 - `chat/completions`: Speaches' OpenAPI-skema for denne endpoint er hele OpenAI's `chat.completions`-skema (30+ besked-/tool-/content-part-typer). For at holde kontrakten overskuelig er `content`, `tool_calls`, `tools`, `tool_choice`, `response_format` og `logprobs`/`stop` typet som rå `JsonElement`, ligesom `format`/tool-`parameters` i `OllamaService` — samme forenklingsprincip.
 - `transcriptions`/`translations`: `response_format` eksponeres ikke i vores API — servicen sætter altid `verbose_json`, så svaret altid har det faste `TranscriptionResultDto`/`TranslationResultDto`-shape (i stedet for Speaches' `anyOf`-svar mellem ren tekst/`json`/`verbose_json`/`srt`/`vtt`). `stream` sættes altid til `false`.
@@ -32,7 +41,7 @@ To sæt DTO'er for samme data, jf. den generelle Service-konvention:
 
 ## Ikke understøttet
 - `GET /health` (Speaches' eget health-ping) er ikke eksponeret, i tråd med at `OllamaService` heller ikke eksponerer en tilsvarende ping/health-endpoint for Ollama.
-- `POST /v1/realtime` (WebRTC-baseret realtids-taleforhandling via SDP-offer/-answer) er ikke implementeret — det er ikke en almindelig JSON-request/response-udveksling, og OpenAPI-dokumentationen for endpointet beskriver ikke selve SDP-content-typen. Kan tilføjes separat hvis realtids-voice-chat bliver nødvendigt.
+- `/v1/realtime` med `intent=conversation` (fuld duplex voice-chat, med AI-genererede stemme-svar) er ikke proxy'et — kun `intent=transcription` (se ovenfor). Samme WebSocket-relay-tilgang ville kunne udvides til conversation-mode hvis det bliver nødvendigt, men er ikke gjort nu for at holde kontrakten fokuseret på transskribering.
 
 ## Udvidelse
 Nye Speaches-endpoints tilføjes ved at: 1) lægge wire-format-DTO'er i `Service/Speaches/Dtos/`, 2) tilføje metoden på `ISpeachesService`/`SpeachesService`, 3) lægge tilsvarende controller-DTO'er i `Dto/Speaches/`, og 4) tilføje en action + mapping i `SpeachesController`.

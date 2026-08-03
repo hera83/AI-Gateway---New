@@ -1,4 +1,6 @@
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AiGateway.Service.Ollama.Dtos;
 using AiGateway.Service.Ollama.Interfaces;
 
@@ -12,10 +14,22 @@ public class OllamaService(HttpClient httpClient) : IOllamaService
         return await PostAsync<GenerateRequestDto, GenerateResultDto>("api/generate", request, cancellationToken);
     }
 
+    public IAsyncEnumerable<GenerateResultDto> GenerateStreamAsync(GenerateRequestDto request, CancellationToken cancellationToken)
+    {
+        request.Stream = true;
+        return PostStreamAsync<GenerateRequestDto, GenerateResultDto>("api/generate", request, cancellationToken);
+    }
+
     public async Task<ChatResultDto> ChatAsync(ChatRequestDto request, CancellationToken cancellationToken)
     {
         request.Stream = false;
         return await PostAsync<ChatRequestDto, ChatResultDto>("api/chat", request, cancellationToken);
+    }
+
+    public IAsyncEnumerable<ChatResultDto> ChatStreamAsync(ChatRequestDto request, CancellationToken cancellationToken)
+    {
+        request.Stream = true;
+        return PostStreamAsync<ChatRequestDto, ChatResultDto>("api/chat", request, cancellationToken);
     }
 
     public async Task<EmbedResultDto> EmbedAsync(EmbedRequestDto request, CancellationToken cancellationToken)
@@ -87,6 +101,27 @@ public class OllamaService(HttpClient httpClient) : IOllamaService
         await EnsureSuccessAsync(response, cancellationToken);
         var result = await response.Content.ReadFromJsonAsync<TResult>(cancellationToken);
         return result ?? new TResult();
+    }
+
+    private async IAsyncEnumerable<TResult> PostStreamAsync<TRequest, TResult>(
+        string requestUri,
+        TRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.PostAsJsonAsync(requestUri, request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+
+        // Ollama streams newline-delimited JSON (one object per line) rather than a single body.
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+        while (await reader.ReadLineAsync(cancellationToken) is { Length: > 0 } line)
+        {
+            var chunk = JsonSerializer.Deserialize<TResult>(line);
+            if (chunk is not null)
+            {
+                yield return chunk;
+            }
+        }
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)

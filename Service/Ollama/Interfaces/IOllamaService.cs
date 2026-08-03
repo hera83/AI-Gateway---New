@@ -6,7 +6,11 @@ public interface IOllamaService
 {
     Task<GenerateResultDto> GenerateAsync(GenerateRequestDto request, CancellationToken cancellationToken);
 
+    IAsyncEnumerable<GenerateResultDto> GenerateStreamAsync(GenerateRequestDto request, CancellationToken cancellationToken);
+
     Task<ChatResultDto> ChatAsync(ChatRequestDto request, CancellationToken cancellationToken);
+
+    IAsyncEnumerable<ChatResultDto> ChatStreamAsync(ChatRequestDto request, CancellationToken cancellationToken);
 
     Task<EmbedResultDto> EmbedAsync(EmbedRequestDto request, CancellationToken cancellationToken);
 

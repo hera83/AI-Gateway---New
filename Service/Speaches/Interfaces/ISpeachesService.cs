@@ -1,3 +1,4 @@
+using System.Net.WebSockets;
 using AiGateway.Service.Speaches.Dtos;
 
 namespace AiGateway.Service.Speaches.Interfaces;
@@ -7,6 +8,12 @@ public interface ISpeachesService
     Task<ChatCompletionResultDto> ChatCompletionsAsync(ChatCompletionRequestDto request, CancellationToken cancellationToken);
 
     Task<TranscriptionResultDto> TranscribeAsync(TranscriptionRequestDto request, CancellationToken cancellationToken);
+
+    // Proxies an already-accepted client WebSocket to Speaches' /v1/realtime endpoint
+    // (intent=transcription) — a transparent duplex relay, not a request/response call like the
+    // rest of this interface, since the caller streams audio in and receives transcription events
+    // back over the same connection until either side closes it.
+    Task ProxyRealtimeTranscriptionAsync(WebSocket clientSocket, string model, string? language, CancellationToken cancellationToken);
 
     Task<TranslationResultDto> TranslateAsync(TranslationRequestDto request, CancellationToken cancellationToken);
 

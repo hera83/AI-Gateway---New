@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AiGateway.Dto.Errors;
 using AiGateway.Service.Ollama.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -15,22 +16,52 @@ namespace AiGateway.Controllers;
 [ProducesResponseType(typeof(ErrorResponseDto), StatusCodes.Status500InternalServerError)]
 public class OllamaController(IOllamaService ollamaService) : ControllerBase
 {
+    // When request.Stream is true, the response body is newline-delimited JSON (one
+    // GenerateResponseDto per line, matching Ollama's own streaming format) instead of the single
+    // object ProducesResponseType documents for the non-streaming (default) case.
     [HttpPost]
     [ProducesResponseType(typeof(ApiDto.GenerateResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ErrorResponseDto), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Generate([FromBody] ApiDto.GenerateRequestDto request, CancellationToken cancellationToken)
     {
-        var result = await ollamaService.GenerateAsync(ToService(request), cancellationToken);
-        return Ok(ToApi(result));
+        if (!request.Stream)
+        {
+            var result = await ollamaService.GenerateAsync(ToService(request), cancellationToken);
+            return Ok(ToApi(result));
+        }
+
+        Response.ContentType = "application/x-ndjson";
+        await foreach (var chunk in ollamaService.GenerateStreamAsync(ToService(request), cancellationToken))
+        {
+            await Response.WriteAsync(JsonSerializer.Serialize(ToApi(chunk)), cancellationToken);
+            await Response.WriteAsync("\n", cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+        }
+
+        return new EmptyResult();
     }
 
+    // See the streaming note on Generate above — same newline-delimited-JSON behavior applies here.
     [HttpPost]
     [ProducesResponseType(typeof(ApiDto.ChatResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ErrorResponseDto), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Chat([FromBody] ApiDto.ChatRequestDto request, CancellationToken cancellationToken)
     {
-        var result = await ollamaService.ChatAsync(ToService(request), cancellationToken);
-        return Ok(ToApi(result));
+        if (!request.Stream)
+        {
+            var result = await ollamaService.ChatAsync(ToService(request), cancellationToken);
+            return Ok(ToApi(result));
+        }
+
+        Response.ContentType = "application/x-ndjson";
+        await foreach (var chunk in ollamaService.ChatStreamAsync(ToService(request), cancellationToken))
+        {
+            await Response.WriteAsync(JsonSerializer.Serialize(ToApi(chunk)), cancellationToken);
+            await Response.WriteAsync("\n", cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+        }
+
+        return new EmptyResult();
     }
 
     [HttpPost]

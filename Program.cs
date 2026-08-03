@@ -247,6 +247,10 @@ try
 
     app.UseHttpsRedirection();
 
+    // Enables the /Speaches/TranscribeRealtime WebSocket proxy — must run before
+    // UseAuthentication/UseAuthorization so the upgrade request still passes through them normally.
+    app.UseWebSockets();
+
     app.UseAuthentication();
     app.UseAuthorization();
 
