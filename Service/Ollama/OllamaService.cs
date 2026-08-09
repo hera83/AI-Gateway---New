@@ -108,7 +108,19 @@ public class OllamaService(HttpClient httpClient) : IOllamaService
         TRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        using var response = await httpClient.PostAsJsonAsync(requestUri, request, cancellationToken);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = JsonContent.Create(request)
+        };
+
+        // ResponseHeadersRead is essential here: PostAsJsonAsync (and SendAsync's default completion
+        // option, ResponseContentRead) wait for Ollama's ENTIRE NDJSON body to finish arriving before
+        // the await below even returns — silently turning "streaming" into "buffer the whole
+        // response, then dump it all at once" (every chunk yielded within milliseconds of each other,
+        // long after the caller expected the first one). ResponseHeadersRead makes this method start
+        // reading — and callers start receiving chunks — as soon as Ollama's headers are in, with the
+        // body streamed incrementally from there.
+        using var response = await httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
 
         // Ollama streams newline-delimited JSON (one object per line) rather than a single body.
