@@ -80,33 +80,47 @@ public class SpeachesService(HttpClient httpClient, ILogger<SpeachesService> log
         using var upstreamSocket = new ClientWebSocket();
         await upstreamSocket.ConnectAsync(upstreamUriBuilder.Uri, cancellationToken);
 
-        // If either direction fails — most notably Speaches crashing/dropping the connection
-        // unexpectedly mid-session (observed right after input_audio_buffer.commit when it tries to
-        // auto-generate a spoken response on top of the transcription) — this token stops the *other*
-        // direction too instead of leaving it dangling on a half-dead socket. Without this, the
-        // failure just propagates out of Task.WhenAll after the upgrade has already happened, so
-        // ASP.NET Core has no HTTP response left to give the client: the connection is simply
-        // aborted, which is exactly the raw "closed without completing the close handshake" symptom
-        // callers see, with no diagnostic at all.
-        using var relayFailureCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        try
+        // Each direction is driven only by the caller's own cancellation token (request abort) —
+        // never by the other direction failing. An earlier version of this method cancelled a shared
+        // "stop the other side too" token when one direction faulted, but WebSocket.ReceiveAsync
+        // aborts its *entire* socket as a side effect of being cancelled (that's just how .NET's
+        // WebSocket implementation works) — so cancelling clientSocket's still-pending receive from
+        // here tore the client connection down instantly, before TryNotifyClientOfFailureAsync below
+        // ever got a chance to run. Don't reintroduce that.
+        var clientToUpstream = RelayAsync(clientSocket, upstreamSocket, cancellationToken);
+        var upstreamToClient = RelayAsync(upstreamSocket, clientSocket, cancellationToken);
+
+        var first = await Task.WhenAny(clientToUpstream, upstreamToClient);
+        if (first.IsFaulted)
         {
-            await Task.WhenAll(
-                RelayAsync(clientSocket, upstreamSocket, relayFailureCts),
-                RelayAsync(upstreamSocket, clientSocket, relayFailureCts));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
+            var ex = first.Exception!.GetBaseException();
             logger.LogError(ex, "Speaches realtime transcription relay failed for model '{Model}'.", model);
             await TryNotifyClientOfFailureAsync(clientSocket, ex);
+        }
+
+        // Give the other direction's task a chance to finish naturally (e.g. the client acking the
+        // close frame TryNotifyClientOfFailureAsync just sent) without letting it block this method
+        // forever if the peer never responds — its own exception, if any, is only observed here so
+        // it doesn't surface later as an unobserved task exception; the failure that mattered (if
+        // any) was already handled above.
+        var second = first == clientToUpstream ? upstreamToClient : clientToUpstream;
+        try
+        {
+            await second.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        }
+        catch
+        {
+            // Timeout or fault on the trailing direction — nothing further to do with it here.
         }
     }
 
     // Best-effort: tells the client *why* the connection is ending instead of just dropping it, using
     // an "error" event shaped like OpenAI's Realtime API (which this protocol mirrors) so existing
     // Realtime-protocol clients can handle it without special-casing this gateway. Uses
-    // CancellationToken.None deliberately — the failure that got us here may have already tripped the
-    // request's own cancellation token, but we still want to attempt this cleanup send.
+    // CloseOutputAsync rather than CloseAsync, and CancellationToken.None throughout, deliberately:
+    // the other relay direction may still have a receive pending on this same clientSocket, and
+    // CloseOutputAsync sends the close frame without waiting for (or conflicting with) that, while
+    // the request's own cancellation token may have already tripped by the time we get here.
     private static async Task TryNotifyClientOfFailureAsync(WebSocket clientSocket, Exception ex)
     {
         if (clientSocket.State != WebSocketState.Open)
@@ -126,7 +140,7 @@ public class SpeachesService(HttpClient httpClient, ILogger<SpeachesService> log
                 }
             });
             await clientSocket.SendAsync(Encoding.UTF8.GetBytes(errorEvent), WebSocketMessageType.Text, true, CancellationToken.None);
-            await clientSocket.CloseAsync(WebSocketCloseStatus.InternalServerError, "Upstream relay failed.", CancellationToken.None);
+            await clientSocket.CloseOutputAsync(WebSocketCloseStatus.InternalServerError, "Upstream relay failed.", CancellationToken.None);
         }
         catch
         {
@@ -138,50 +152,33 @@ public class SpeachesService(HttpClient httpClient, ILogger<SpeachesService> log
     // events — audio is base64 inside e.g. "input_audio_buffer.append", not a raw binary frame — so
     // this gateway never needs to parse a single event: it only has to shuttle whole messages
     // verbatim in both directions until one side closes.
-    private static async Task RelayAsync(WebSocket source, WebSocket destination, CancellationTokenSource relayFailureCts)
+    private static async Task RelayAsync(WebSocket source, WebSocket destination, CancellationToken cancellationToken)
     {
-        var cancellationToken = relayFailureCts.Token;
         var buffer = new byte[8192];
-        try
+        while (source.State == WebSocketState.Open)
         {
-            while (source.State == WebSocketState.Open)
+            using var messageStream = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
             {
-                using var messageStream = new MemoryStream();
-                WebSocketReceiveResult result;
-                do
+                result = await source.ReceiveAsync(buffer, cancellationToken);
+                if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    result = await source.ReceiveAsync(buffer, cancellationToken);
-                    if (result.MessageType == WebSocketMessageType.Close)
+                    if (destination.State == WebSocketState.Open)
                     {
-                        if (destination.State == WebSocketState.Open)
-                        {
-                            await destination.CloseOutputAsync(result.CloseStatus ?? WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, cancellationToken);
-                        }
-
-                        return;
+                        await destination.CloseOutputAsync(result.CloseStatus ?? WebSocketCloseStatus.NormalClosure, result.CloseStatusDescription, cancellationToken);
                     }
 
-                    messageStream.Write(buffer, 0, result.Count);
-                } while (!result.EndOfMessage);
-
-                if (destination.State == WebSocketState.Open)
-                {
-                    await destination.SendAsync(messageStream.ToArray(), result.MessageType, true, cancellationToken);
+                    return;
                 }
+
+                messageStream.Write(buffer, 0, result.Count);
+            } while (!result.EndOfMessage);
+
+            if (destination.State == WebSocketState.Open)
+            {
+                await destination.SendAsync(messageStream.ToArray(), result.MessageType, true, cancellationToken);
             }
-        }
-        catch (OperationCanceledException) when (relayFailureCts.IsCancellationRequested)
-        {
-            // Either the caller's own cancellation token fired (normal shutdown) or the *other*
-            // direction failed and cancelled this shared token — neither is this direction's own
-            // error to report, so swallow it quietly instead of surfacing a misleading exception.
-        }
-        catch
-        {
-            // Stop the other direction too — no point leaving it relaying into a half-dead session —
-            // and let our real exception (not this cancellation) be the one Task.WhenAll observes.
-            relayFailureCts.Cancel();
-            throw;
         }
     }
 
