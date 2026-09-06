@@ -126,6 +126,15 @@ try
 
     builder.Services.Configure<KnowledgeBaseOptions>(builder.Configuration.GetSection("KnowledgeBase"));
 
+    // Multipart form uploads (Speaches Transcribe/Translate/CreateSpeechEmbedding/etc.) have their own
+    // size ceiling on top of Kestrel:Limits:MaxRequestBodySize (appsettings.json) — default is 128 MB,
+    // which is below that 250 MB Kestrel limit, so it needs raising too or larger uploads would still
+    // be rejected here instead.
+    builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+    {
+        options.MultipartBodyLengthLimit = 250_000_000;
+    });
+
     builder.Services.AddDbContext<AppDbContext>(options => options
         .UseSqlite($"Data Source={dbPath}")
         .AddInterceptors(new SqliteVecConnectionInterceptor(vectorDbPath)));
