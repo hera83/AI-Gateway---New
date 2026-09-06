@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -332,10 +333,7 @@ public class SpeachesService(HttpClient httpClient, ILogger<SpeachesService> log
         }
 
         using var content = BuildMultipartContent(fields, request.File, request.FileName, request.ContentType);
-        using var response = await httpClient.PostAsync("v1/audio/speech/timestamps", content, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
-        var result = await response.Content.ReadFromJsonAsync<List<SpeechTimestampDto>>(cancellationToken);
-        return result ?? [];
+        return await PostMultipartAsync<List<SpeechTimestampDto>>("v1/audio/speech/timestamps", content, cancellationToken);
     }
 
     public async Task<DiarizationResultDto> DiarizeAsync(DiarizationRequestDto request, CancellationToken cancellationToken)
@@ -383,16 +381,32 @@ public class SpeachesService(HttpClient httpClient, ILogger<SpeachesService> log
     private async Task<TResult> PostJsonAsync<TRequest, TResult>(string requestUri, TRequest request, CancellationToken cancellationToken)
         where TResult : new()
     {
+        logger.LogInformation("Sending request to Speaches at '{RequestUri}'.", requestUri);
+        var stopwatch = Stopwatch.StartNew();
         using var response = await httpClient.PostAsJsonAsync(requestUri, request, cancellationToken);
+        logger.LogInformation(
+            "Received response from Speaches for '{RequestUri}' after {ElapsedMilliseconds} ms (status {StatusCode}).",
+            requestUri, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
         await EnsureSuccessAsync(response, cancellationToken);
         var result = await response.Content.ReadFromJsonAsync<TResult>(cancellationToken);
         return result ?? new TResult();
     }
 
+    // Long-running (uploads can take minutes for large audio files, see CLAUDE.md's 75-minute
+    // HttpClient.Timeout) — logged with elapsed time on both ends so a stuck-looking transcription
+    // can be told apart from "still uploading/decoding, GPU just hasn't started yet" without
+    // guessing, since there is otherwise no progress signal between the request starting and ending.
     private async Task<TResult> PostMultipartAsync<TResult>(string requestUri, MultipartFormDataContent content, CancellationToken cancellationToken)
         where TResult : new()
     {
+        logger.LogInformation(
+            "Sending multipart request to Speaches at '{RequestUri}' ({ContentLength} bytes).",
+            requestUri, content.Headers.ContentLength?.ToString(CultureInfo.InvariantCulture) ?? "unknown");
+        var stopwatch = Stopwatch.StartNew();
         using var response = await httpClient.PostAsync(requestUri, content, cancellationToken);
+        logger.LogInformation(
+            "Received response from Speaches for '{RequestUri}' after {ElapsedMilliseconds} ms (status {StatusCode}).",
+            requestUri, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
         await EnsureSuccessAsync(response, cancellationToken);
         var result = await response.Content.ReadFromJsonAsync<TResult>(cancellationToken);
         return result ?? new TResult();
