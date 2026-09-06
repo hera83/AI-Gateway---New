@@ -32,6 +32,17 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
+    // Kestrel does NOT bind arbitrary Limits.* properties (e.g. MaxRequestBodySize) from the
+    // "Kestrel" configuration section automatically — only Endpoints/certificate settings are read
+    // that way. Limits.MaxRequestBodySize therefore has to be set explicitly here; the config value
+    // (appsettings.json) is still the source of truth so it stays next to KnowledgeBase:MaxUploadSizeBytes.
+    // Default is 30,000,000 bytes; raised so Speaches audio uploads (Transcribe/Translate/etc.) can
+    // go up to 250 MB.
+    builder.WebHost.ConfigureKestrel(options =>
+    {
+        options.Limits.MaxRequestBodySize = builder.Configuration.GetValue<long>("Kestrel:Limits:MaxRequestBodySize");
+    });
+
     // All databases for this app live under App_dbs/ at the project root.
     var dbDirectory = Path.Combine(builder.Environment.ContentRootPath, "App_dbs");
     Directory.CreateDirectory(dbDirectory);
